@@ -21,7 +21,7 @@ st.caption("يعمل بمحرك DeepTutor الأصلي والقدرات التو
 @st.cache_resource
 def get_background_engine():
     """حلقة أحداث مخصصة تعمل في خلفية التطبيق لمنع تعارض الأقفال (Asyncio Locks)"""
-    # تنظيف أي أقفال أو حاويات قديمة من جلسات سابقة لمنع أخطاء الأقفال
+    # تنظيف أي أقفال أو حاويات قديمة من جلسات سابقة
     try:
         import deeptutor.app.container as app_container
         import deeptutor.services.session.sqlite_store as sqlite_store
@@ -170,14 +170,29 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
                 e_type = data.get("type")
                 if e_type == "content":
                     chunk = data.get("content", "")
-                    full_response.append(chunk)
-                    response_placeholder.markdown("".join(full_response) + "▌")
+                    if chunk:
+                        full_response.append(chunk)
+                        response_placeholder.markdown("".join(full_response) + "▌")
+                elif e_type == "result":
+                    meta = data.get("metadata", {})
+                    resp_val = meta.get("response") or meta.get("answer") or data.get("content", "")
+                    if resp_val and not full_response:
+                        full_response.append(resp_val)
                 elif e_type == "thinking":
                     thinking_text = data.get("thinking", "")
-                    status_box.write(f"💭 **تفكير:** {thinking_text}")
+                    if thinking_text:
+                        status_box.write(f"💭 **تفكير:** {thinking_text}")
                 elif e_type == "tool_call":
                     tool_name = data.get("name", "")
                     status_box.write(f"🔧 **استخدام أداة:** `{tool_name}`")
+                elif e_type == "progress":
+                    prog_content = data.get("content", "")
+                    if prog_content:
+                        status_box.write(f"⏳ **المرحلة:** {prog_content}")
+                elif e_type == "error":
+                    err_msg = data.get("content") or data.get("message") or str(data)
+                    error_occurred = err_msg
+                    break
             elif msg_type == "error":
                 error_occurred = data
                 break
@@ -185,8 +200,16 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
                 break
 
         if error_occurred:
-            status_box.update(label="❌ حدث خطأ", state="error", expanded=True)
-            st.error(f"خطأ أثناء تشغيل محرك DeepTutor: {error_occurred}")
+            status_box.update(label="❌ حدث خطأ أثناء المعالجة", state="error", expanded=True)
+            if "503" in str(error_occurred):
+                st.error("⚠️ خوادم النموذج تواجه ضغطاً مؤقتاً (503 High Demand). يرجى إرسال الرسالة مرة أخرى.")
+            elif "429" in str(error_occurred):
+                st.error("⚠️ تم تجاوز الحصة اللحظية لمفتاح API (Rate Limit 429). انتظر بضع ثوانٍ وأعد المحاولة.")
+            else:
+                st.error(f"خطأ أثناء تشغيل محرك DeepTutor: {error_occurred}")
+        elif not full_response:
+            status_box.update(label="⚠️ لم يتم استلام نص للإجابة", state="error", expanded=True)
+            st.warning("انتهت المعالجة لكن لم يُرجع النموذج أي نص. يُرجى إعادة إرسال السؤال.")
         else:
             status_box.update(label="✅ تم اكتمال الإجابة بنجاح!", state="complete", expanded=False)
             final_text = "".join(full_response).strip()
