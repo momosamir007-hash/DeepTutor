@@ -17,11 +17,10 @@ st.set_page_config(page_title="DeepTutor - المدرس الذكي", page_icon="
 st.title("🎓 DeepTutor - محرك التدريس الذكي")
 st.caption("يعمل بمحرك DeepTutor الأصلي والقدرات التوليدية المتعددة (Multi-Stage Agentic Capabilities)")
 
-# 1. إنشاء حلقة أحداث مستمرة (Persistent Event Loop) لتفادي خطأ Event Loop
+# 1. إنشاء حلقة أحداث مستمرة + تهيئة النموذج النشط
 @st.cache_resource
 def get_background_engine():
-    """حلقة أحداث مخصصة تعمل في خلفية التطبيق لمنع تعارض الأقفال (Asyncio Locks)"""
-    # تنظيف أي أقفال أو حاويات قديمة من جلسات سابقة
+    """حلقة أحداث مخصصة تعمل في خلفية التطبيق وتضبط النموذج الافتراضي"""
     try:
         import deeptutor.app.container as app_container
         import deeptutor.services.session.sqlite_store as sqlite_store
@@ -40,7 +39,27 @@ def get_background_engine():
     thread.start()
 
     async def _init():
-        return DeepTutorApp()
+        app = DeepTutorApp()
+        # تهيئة نموذج اللغة ومفتاح الـ API داخل محرك DeepTutor
+        try:
+            settings_service = app.container.settings()
+            # جلب المفتاح من بيئة النظام أو من Streamlit Secrets
+            api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
+            
+            await settings_service.update_settings({
+                "active_model": "gemini-1.5-flash",
+                "active_provider": "gemini",
+                "providers": {
+                    "gemini": {
+                        "api_key": api_key,
+                        "enabled": True
+                    }
+                }
+            })
+        except Exception:
+            pass
+            
+        return app
 
     future = asyncio.run_coroutine_threadsafe(_init(), loop)
     app = future.result()
@@ -152,7 +171,7 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
                 async for event in app.stream_turn(turn["id"]):
                     q.put(("event", event))
                 
-                # جلب أي رد تم تخزينه في الجلسة للتأكد بنسبة 100% من عدم فقدان الإجابة
+                # جلب أي رد تم تخزينه في الجلسة
                 try:
                     store = app.turns.store_provider.get()
                     db_msgs = await store.get_messages(session["id"])
@@ -216,12 +235,7 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
 
         if error_occurred:
             status_box.update(label="❌ حدث خطأ أثناء المعالجة", state="error", expanded=True)
-            if "503" in str(error_occurred):
-                st.error("⚠️ خوادم النموذج تواجه ضغطاً مؤقتاً (503 High Demand). يرجى إرسال الرسالة مرة أخرى الآن.")
-            elif "429" in str(error_occurred):
-                st.error("⚠️ تم استهلاك حصة الـ API مؤقتاً (429 Rate Limit). يرجى الانتظار دقيقة وإعادة الإرسال.")
-            else:
-                st.error(f"خطأ أثناء تشغيل محرك DeepTutor: {error_occurred}")
+            st.error(f"خطأ أثناء تشغيل محرك DeepTutor: {error_occurred}")
         elif not full_response:
             status_box.update(label="⚠️ لم يتم استلام نص للإجابة", state="error", expanded=True)
             st.warning("انتهت المعالجة لكن لم يُرجع النموذج أي نص. يُرجى إعادة إرسال السؤال مرة أخرى.")
