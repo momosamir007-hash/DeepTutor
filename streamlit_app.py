@@ -67,7 +67,7 @@ if prompt := st.chat_input("اسأل المدرس أي سؤال حول الكت�
             try:
                 client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model = "gemini-2.5-flash-lite",
                     contents=[system_instruction, f"سؤال الطالب: {prompt}"]
                 )
                 st.markdown(response.text)
