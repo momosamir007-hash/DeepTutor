@@ -1,2 +1,4 @@
+# Source/Docker full profile. Generated module groups own dependency versions.
+-r requirements/full.txt
 streamlit
-deeptutor[full]
+
