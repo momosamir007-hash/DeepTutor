@@ -1,5 +1,5 @@
 # تثبيت حزمة DeepTutor محلياً داخل بيئة التطبيق (يحل خطأ ModuleNotFoundError)
--e .
+
 
 # مكتبة واجهة Streamlit
 streamlit>=1.30.0
