@@ -24,9 +24,100 @@ st.set_page_config(page_title="DeepTutor - المدرس الذكي", page_icon="
 st.title("🎓 DeepTutor - محرك التدريس الذكي")
 st.caption("يعمل بمحرك DeepTutor الأصلي مع القدرات التوليدية المتعددة (Agentic Multi-Capabilities)")
 
-# 2. حلقة أحداث خلفية وتهيئة صريحة لإعدادات النموذج في DeepTutor
+# 2. إدخال مفتاح Gemini قبل إنشاء المحرك حتى يكون متاحاً أثناء التهيئة
+try:
+    configured_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+except Exception:
+    configured_gemini_key = ""
+
+with st.sidebar:
+    st.header("⚙️ إعدادات Gemini")
+    gemini_key_input = st.text_input(
+        "مفتاح Gemini API:",
+        value=os.environ.get("GEMINI_API_KEY", "") or configured_gemini_key,
+        type="password",
+        help="يمكن أيضاً وضعه في Streamlit Secrets باسم GEMINI_API_KEY."
+    )
+
+if gemini_key_input:
+    os.environ["GEMINI_API_KEY"] = gemini_key_input
+
+# 3. حلقة أحداث خلفية وتهيئة سجل النماذج الأصلي في DeepTutor
+def _configure_gemini_catalog(api_key: str):
+    """Create/select an active Gemini LLM profile using DeepTutor's own catalog schema."""
+    if not api_key:
+        raise RuntimeError(
+            "أدخل مفتاح Gemini API في الشريط الجانبي أو عرّف GEMINI_API_KEY."
+        )
+
+    from uuid import uuid4
+    from deeptutor.services.config.model_catalog import get_model_catalog_service
+
+    catalog_service = get_model_catalog_service()
+    catalog = catalog_service.load()
+    services = catalog.setdefault("services", {})
+    llm_service = services.setdefault(
+        "llm", {"active_profile_id": None, "active_model_id": None, "profiles": []}
+    )
+    profiles = llm_service.setdefault("profiles", [])
+
+    # Prefer an existing Gemini profile; otherwise create one without deleting
+    # any profiles or models already configured by the user.
+    profile = next(
+        (
+            p for p in profiles
+            if isinstance(p, dict)
+            and str(p.get("binding", "")).lower() == "gemini"
+            and not p.get("provider_only")
+        ),
+        None,
+    )
+    if profile is None:
+        profile = {
+            "id": f"streamlit-gemini-{uuid4().hex[:10]}",
+            "name": "Gemini (Streamlit)",
+            "binding": "gemini",
+            "provider": "gemini",
+            "api_key": api_key,
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+            "models": [],
+        }
+        profiles.append(profile)
+    else:
+        profile["binding"] = "gemini"
+        profile["provider"] = "gemini"
+        profile["api_key"] = api_key
+        profile["base_url"] = (
+            profile.get("base_url")
+            or "https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
+
+    models = profile.setdefault("models", [])
+    model = next(
+        (
+            m for m in models
+            if isinstance(m, dict) and m.get("model") == "gemini-2.5-flash"
+        ),
+        None,
+    )
+    if model is None:
+        model = {
+            "id": f"streamlit-gemini-model-{uuid4().hex[:10]}",
+            "name": "Gemini 2.5 Flash",
+            "model": "gemini-2.5-flash",
+        }
+        models.append(model)
+
+    llm_service["active_profile_id"] = profile["id"]
+    llm_service["active_model_id"] = model["id"]
+    catalog_service.save(catalog)
+
+    # DeepTutor caches the resolved LLM config; clear it after changing catalog.
+    from deeptutor.services.llm.config import clear_llm_config_cache
+    clear_llm_config_cache()
+
 @st.cache_resource
-def get_background_engine():
+def get_background_engine(api_key: str):
     """تنشيط حلقة أحداث خلفية وتكوين النموذج والنموذج الفعال برمجياً"""
     try:
         import deeptutor.app.container as app_container
@@ -46,79 +137,30 @@ def get_background_engine():
     thread.start()
 
     async def _init():
+        # Configure the official model catalog before DeepTutorApp creates
+        # services that resolve the active LLM.
+        _configure_gemini_catalog(api_key)
         app = DeepTutorApp()
-        
-        # جلب المفاتيح من Streamlit Secrets أو بيئة النظام
-        gemini_key = ""
-        openai_key = ""
-        try:
-            gemini_key = st.secrets.get("GEMINI_API_KEY", "")
-        except Exception:
-            pass
-        gemini_key = gemini_key or os.environ.get("GEMINI_API_KEY", "")
-
-        try:
-            openai_key = st.secrets.get("OPENAI_API_KEY", "")
-        except Exception:
-            pass
-        openai_key = openai_key or os.environ.get("OPENAI_API_KEY", "")
-
-        # اختيار المزود والنموذج الافتراضي
-        if gemini_key:
-            provider = "gemini"
-            model_name = "gemini-1.5-flash"
-            active_key = gemini_key
-            os.environ["GEMINI_API_KEY"] = gemini_key
-        elif openai_key:
-            provider = "openai"
-            model_name = "gpt-4o-mini"
-            active_key = openai_key
-            os.environ["OPENAI_API_KEY"] = openai_key
-        else:
-            provider = "gemini"
-            model_name = "gemini-1.5-flash"
-            active_key = "DEMO_KEY"
-
-        # تسجيل النموذج والمزود صراحة في خدمة إعدادات DeepTutor
-        try:
-            settings_svc = app.container.settings()
-            
-            # بناء هيكل الإعدادات المطلوبة
-            config_data = {
-                "active_model": model_name,
-                "active_provider": provider,
-                "providers": {
-                    provider: {
-                        "api_key": active_key,
-                        "enabled": True,
-                        "default_model": model_name
-                    }
-                }
-            }
-            
-            if hasattr(settings_svc, "update_settings"):
-                await settings_svc.update_settings(config_data)
-        except Exception as err:
-            print(f"[DeepTutor Settings Init Error]: {err}")
-
         return app
 
     future = asyncio.run_coroutine_threadsafe(_init(), loop)
     app = future.result()
     return loop, app
 
-# تشغيل المحرك
-loop, app = get_background_engine()
+# تشغيل المحرك بعد إدخال مفتاح Gemini وتهيئة السجل الأصلي
+if not gemini_key_input:
+    st.info("أدخل مفتاح Gemini API في الشريط الجانبي لتشغيل المحرك.")
+    st.stop()
+
+try:
+    loop, app = get_background_engine(gemini_key_input)
+except Exception as init_error:
+    st.error(f"تعذر تهيئة DeepTutor مع Gemini: {init_error}")
+    st.stop()
 
 # 3. القائمة الجانبية (Sidebar)
 with st.sidebar:
     st.header("⚙️ إعدادات DeepTutor")
-    
-    # إمكانية إدخال المفتاح يدويًا إذا لم يكن مضبوطاً في Secrets
-    user_key = st.text_input("مفتاح API (Gemini / OpenAI):", type="password")
-    if user_key:
-        os.environ["GEMINI_API_KEY"] = user_key
-        os.environ["OPENAI_API_KEY"] = user_key
     
     capability_options = {
         "chat": "💬 محادثة وتدريس تفاعلي (Chat)",
