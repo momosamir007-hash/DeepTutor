@@ -1,39 +1,57 @@
-"""Streamlit entry point for DeepTutor with native Gemini catalog configuration."""
-from __future__ import annotations
-
-import asyncio
-import base64
 import os
 import sys
-import threading
-from queue import Queue
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-os.environ.setdefault("DEEPTUTOR_HOME", str(ROOT))
+# 1. إجبار نظام بايثون على قراءة المجلد الحالي والمجلد الأب لحل مسارات الاستيراد
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
+PARENT_DIR = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
 
 import streamlit as st
+import asyncio
+import threading
+import base64
+from queue import Queue
+
+from deeptutor.app import DeepTutorApp
+from deeptutor.core.turn_request import TurnRequest, OutgoingAttachment
 
 st.set_page_config(page_title="DeepTutor - المدرس الذكي", page_icon="🎓", layout="wide")
-st.title("🎓 DeepTutor - المدرس الذكي")
-st.caption("واجهة Streamlit تستخدم محرك DeepTutor الأصلي وإعدادات Gemini الأصلية.")
 
+st.title("🎓 DeepTutor - محرك التدريس الذكي")
+st.caption("يعمل بمحرك DeepTutor الأصلي مع القدرات التوليدية المتعددة (Agentic Multi-Capabilities)")
 
-def _secret(name: str) -> str:
-    try:
-        value = st.secrets.get(name, "")
-        if value:
-            return str(value).strip()
-    except Exception:
-        pass
-    return os.environ.get(name, "").strip()
+# 2. إدخال مفتاح Gemini قبل إنشاء المحرك حتى يكون متاحاً أثناء التهيئة
+try:
+    configured_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+except Exception:
+    configured_gemini_key = ""
 
+with st.sidebar:
+    st.header("⚙️ إعدادات Gemini")
+    gemini_key_input = st.text_input(
+        "مفتاح Gemini API:",
+        value=os.environ.get("GEMINI_API_KEY", "") or configured_gemini_key,
+        type="password",
+        help="يمكن أيضاً وضعه في Streamlit Secrets باسم GEMINI_API_KEY."
+    )
 
-def configure_gemini(api_key: str, model_name: str) -> str:
-    """Persist Gemini as the active LLM using DeepTutor's own model catalog."""
-    from deeptutor.services.config import get_model_catalog_service
+if gemini_key_input:
+    os.environ["GEMINI_API_KEY"] = gemini_key_input
+
+# 3. حلقة أحداث خلفية وتهيئة سجل النماذج الأصلي في DeepTutor
+def _configure_gemini_catalog(api_key: str):
+    """Create/select an active Gemini LLM profile using DeepTutor's own catalog schema."""
+    if not api_key:
+        raise RuntimeError(
+            "أدخل مفتاح Gemini API في الشريط الجانبي أو عرّف GEMINI_API_KEY."
+        )
+
+    from uuid import uuid4
+    from deeptutor.services.config.model_catalog import get_model_catalog_service
 
     catalog_service = get_model_catalog_service()
     catalog = catalog_service.load()
@@ -43,144 +61,154 @@ def configure_gemini(api_key: str, model_name: str) -> str:
     )
     profiles = llm_service.setdefault("profiles", [])
 
-    profile_id = "streamlit-gemini-profile"
-    model_id = "streamlit-gemini-model"
-    profile = next((p for p in profiles if p.get("id") == profile_id), None)
+    # Prefer an existing Gemini profile; otherwise create one without deleting
+    # any profiles or models already configured by the user.
+    profile = next(
+        (
+            p for p in profiles
+            if isinstance(p, dict)
+            and str(p.get("binding", "")).lower() == "gemini"
+            and not p.get("provider_only")
+        ),
+        None,
+    )
     if profile is None:
-        profile = {"id": profile_id, "name": "Gemini (Streamlit)", "models": []}
-        profiles.append(profile)
-
-    profile.update(
-        {
+        profile = {
+            "id": f"streamlit-gemini-{uuid4().hex[:10]}",
             "name": "Gemini (Streamlit)",
             "binding": "gemini",
+            "provider": "gemini",
             "api_key": api_key,
-            "base_url": "",
-            "api_version": "",
-            "extra_headers": {},
-            "api_format": "auto",
-            "wire_api": "auto",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+            "models": [],
         }
-    )
+        profiles.append(profile)
+    else:
+        profile["binding"] = "gemini"
+        profile["provider"] = "gemini"
+        profile["api_key"] = api_key
+        profile["base_url"] = (
+            profile.get("base_url")
+            or "https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
+
     models = profile.setdefault("models", [])
-    model = next((m for m in models if m.get("id") == model_id), None)
+    model = next(
+        (
+            m for m in models
+            if isinstance(m, dict) and m.get("model") == "gemini-2.5-flash"
+        ),
+        None,
+    )
     if model is None:
-        model = {"id": model_id}
+        model = {
+            "id": f"streamlit-gemini-model-{uuid4().hex[:10]}",
+            "name": "Gemini 2.5 Flash",
+            "model": "gemini-2.5-flash",
+        }
         models.append(model)
-    model.update({"id": model_id, "name": model_name, "model": model_name})
 
-    llm_service["active_profile_id"] = profile_id
-    llm_service["active_model_id"] = model_id
+    llm_service["active_profile_id"] = profile["id"]
+    llm_service["active_model_id"] = model["id"]
     catalog_service.save(catalog)
-    os.environ["GEMINI_API_KEY"] = api_key
-    return str(catalog_service.path)
 
+    # DeepTutor caches the resolved LLM config; clear it after changing catalog.
+    from deeptutor.services.llm.config import clear_llm_config_cache
+    clear_llm_config_cache()
 
-@st.cache_resource(show_spinner=False)
-def get_background_engine(api_key_fingerprint: str):
-    """Create one persistent async loop and DeepTutor app for this configured key."""
-    # api_key_fingerprint is deliberately only a cache key; the secret itself
-    # is read from the environment and is never stored in Streamlit's cache key.
+@st.cache_resource
+def get_background_engine(api_key: str):
+    """تنشيط حلقة أحداث خلفية وتكوين النموذج والنموذج الفعال برمجياً"""
     try:
         import deeptutor.app.container as app_container
         import deeptutor.services.session.sqlite_store as sqlite_store
         app_container._default_container = None
-        if hasattr(sqlite_store, "_instances"):
-            sqlite_store._instances.clear()
+        sqlite_store._instances.clear()
     except Exception:
         pass
 
     loop = asyncio.new_event_loop()
+    
+    def _run_worker(l):
+        asyncio.set_event_loop(l)
+        l.run_forever()
 
-    def _worker():
-        asyncio.set_event_loop(loop)
-        loop.run_forever()
-
-    thread = threading.Thread(target=_worker, name="deeptutor-async-loop", daemon=True)
+    thread = threading.Thread(target=_run_worker, args=(loop,), daemon=True)
     thread.start()
 
-    async def _create_app():
-        from deeptutor.app import DeepTutorApp
-        return DeepTutorApp()
+    async def _init():
+        # Configure the official model catalog before DeepTutorApp creates
+        # services that resolve the active LLM.
+        _configure_gemini_catalog(api_key)
+        app = DeepTutorApp()
+        return app
 
-    future = asyncio.run_coroutine_threadsafe(_create_app(), loop)
-    try:
-        app = future.result(timeout=90)
-    except Exception:
-        loop.call_soon_threadsafe(loop.stop)
-        raise
+    future = asyncio.run_coroutine_threadsafe(_init(), loop)
+    app = future.result()
     return loop, app
 
+# تشغيل المحرك بعد إدخال مفتاح Gemini وتهيئة السجل الأصلي
+if not gemini_key_input:
+    st.info("أدخل مفتاح Gemini API في الشريط الجانبي لتشغيل المحرك.")
+    st.stop()
 
+try:
+    loop, app = get_background_engine(gemini_key_input)
+except Exception as init_error:
+    st.error(f"تعذر تهيئة DeepTutor مع Gemini: {init_error}")
+    st.stop()
+
+# 3. القائمة الجانبية (Sidebar)
 with st.sidebar:
-    st.header("⚙️ إعدادات Gemini")
-    default_key = _secret("GEMINI_API_KEY")
-    gemini_key = st.text_input(
-        "مفتاح Gemini API",
-        value=default_key,
-        type="password",
-        help="يمكنك وضع المفتاح في .streamlit/secrets.toml باسم GEMINI_API_KEY أو إدخاله هنا.",
-    ).strip()
-    model_name = st.selectbox(
-        "النموذج",
-        ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
-        index=0,
-    )
-    st.caption("لا تضع مفتاح API داخل ملفات المشروع أو تشاركه مع الآخرين.")
-    st.markdown("---")
+    st.header("⚙️ إعدادات DeepTutor")
+    
     capability_options = {
-        "chat": "💬 محادثة وتدريس تفاعلي",
-        "deep_solve": "🧠 حل مسائل وتفكير عميق",
-        "deep_question": "❓ توليد أسئلة واختبارات",
-        "deep_research": "🔬 بحث وتفكيك مفاهيم",
-        "visualize": "📊 شرح وتوليد رسوم بيانية",
+        "chat": "💬 محادثة وتدريس تفاعلي (Chat)",
+        "deep_solve": "🧠 حل مسائل وتفكير عميق (Deep Solve)",
+        "deep_question": "❓ توليد أسئلة واختبارات (Quiz / Questions)",
+        "deep_research": "🔬 بحث وتفكيك مفاهيم شامل (Deep Research)",
+        "visualize": "📊 شرح وتوليد رسوم بيانية (Visualize)"
     }
     selected_cap = st.selectbox(
-        "وضعية التعلم", list(capability_options), format_func=lambda x: capability_options[x]
+        "اختر وضعية التعلم (Capability):",
+        options=list(capability_options.keys()),
+        format_func=lambda x: capability_options[x]
     )
+    
     persona_options = {
-        "teacher": "👨‍🏫 المعلم",
-        "peer": "🧑‍🎓 الزميل",
-        "research-assistant": "🔬 المساعد البحثي",
+        "teacher": "👨‍🏫 المعلم (Teacher) - صبور ومنظم",
+        "peer": "🧑‍🎓 الزميل (Peer) - مبسط وودود",
+        "research-assistant": "🔬 المساعد البحثي (Research Assistant)"
     }
     selected_persona = st.selectbox(
-        "شخصية المساعد", list(persona_options), format_func=lambda x: persona_options[x]
+        "اختر شخصية المعلم (Persona):",
+        options=list(persona_options.keys()),
+        format_func=lambda x: persona_options[x]
     )
+
     st.markdown("---")
-    uploaded_file = st.file_uploader(
-        "ارفع كتاباً أو ملفاً", type=["pdf", "txt", "md"]
-    )
-    if st.button("🔄 إعادة ضبط الجلسة", use_container_width=True):
+    st.subheader("📚 المرفقات والكتب")
+    uploaded_file = st.file_uploader("ارفع كتاباً أو ملفاً (PDF/TXT/MD):", type=["pdf", "txt", "md"])
+
+    st.markdown("---")
+    if st.button("🔄 إعادة ضبط الجلسة والمحرك"):
+        st.cache_resource.clear()
         st.session_state.session_id = None
         st.session_state.messages = []
         st.rerun()
 
-if not gemini_key:
-    st.info("أدخل مفتاح Gemini API في الشريط الجانبي لبدء تشغيل المحرك.")
-    st.stop()
-
-try:
-    catalog_path = configure_gemini(gemini_key, model_name)
-    # Do not expose the actual API key in the cache key.
-    import hashlib
-    key_fingerprint = hashlib.sha256(gemini_key.encode("utf-8")).hexdigest()
-    loop, app = get_background_engine(key_fingerprint)
-    st.sidebar.success(f"Gemini مهيأ بنجاح · {model_name}")
-except Exception as exc:
-    st.error(f"تعذر تهيئة DeepTutor مع Gemini: {exc}")
-    st.stop()
-
-from deeptutor.core.turn_request import TurnRequest, OutgoingAttachment
-
+# 4. إدارة حالة الجلسة
 if "session_id" not in st.session_state:
     st.session_state.session_id = None
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
+# 5. معالجة الرسائل
 if prompt := st.chat_input("اكتب سؤالك أو الدرس الذي تريد شرحه..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -188,103 +216,115 @@ if prompt := st.chat_input("اكتب سؤالك أو الدرس الذي تري�
 
     attachments = []
     if uploaded_file is not None:
+        file_bytes = uploaded_file.getvalue()
+        b64 = base64.b64encode(file_bytes).decode("utf-8")
+        mime = uploaded_file.type or "application/pdf"
         attachments.append(
             OutgoingAttachment(
                 type="file",
                 filename=uploaded_file.name,
-                base64=base64.b64encode(uploaded_file.getvalue()).decode("utf-8"),
-                mime_type=uploaded_file.type or "application/octet-stream",
+                base64=b64,
+                mime_type=mime
             )
         )
 
-    request = TurnRequest(
+    turn_req = TurnRequest(
         content=prompt,
         capability=selected_cap,
         persona=selected_persona,
         session_id=st.session_state.session_id,
         attachments=attachments,
-        language="ar",
+        language="ar"
     )
 
     with st.chat_message("assistant"):
-        response_box = st.empty()
-        status = st.status("🧠 جاري تشغيل DeepTutor...", expanded=True)
-        events: Queue = Queue()
+        response_placeholder = st.empty()
+        status_box = st.status("🧠 جاري تشغيل قدرات DeepTutor...", expanded=True)
+        
+        event_queue = Queue()
 
-        async def run_turn(req: TurnRequest, queue: Queue):
+        async def _run_turn_coro(req, q):
             try:
                 try:
                     session, turn = await app.start_turn(req)
-                except Exception as exc:
-                    if "not found in this workspace" in str(exc):
+                except Exception as ex:
+                    if "not found in this workspace" in str(ex):
                         req.session_id = None
                         session, turn = await app.start_turn(req)
                     else:
-                        raise
-                queue.put(("session_id", session["id"]))
+                        raise ex
+                q.put(("session_id", session["id"]))
                 async for event in app.stream_turn(turn["id"]):
-                    queue.put(("event", event))
+                    q.put(("event", event))
+                
                 try:
                     store = app.turns.store_provider.get()
-                    db_messages = await store.get_messages(session["id"])
-                    for item in reversed(db_messages):
-                        if item.get("role") == "assistant" and item.get("content"):
-                            queue.put(("fallback", item["content"]))
+                    db_msgs = await store.get_messages(session["id"])
+                    for m in reversed(db_msgs):
+                        if m.get("role") == "assistant" and m.get("content"):
+                            q.put(("db_assistant_message", m["content"]))
                             break
                 except Exception:
                     pass
-            except Exception as exc:
-                queue.put(("error", str(exc)))
+
+            except Exception as e:
+                q.put(("error", str(e)))
             finally:
-                queue.put(("done", None))
+                q.put(("done", None))
 
-        asyncio.run_coroutine_threadsafe(run_turn(request, events), loop)
-        chunks: list[str] = []
-        failure = None
+        asyncio.run_coroutine_threadsafe(_run_turn_coro(turn_req, event_queue), loop)
+
+        full_response = []
+        error_occurred = None
+
         while True:
-            kind, payload = events.get()
-            if kind == "session_id":
-                st.session_state.session_id = payload
-            elif kind == "fallback" and not chunks:
-                chunks.append(payload)
-            elif kind == "event":
-                event_type = payload.get("type")
-                if event_type == "content":
-                    content = payload.get("content", "")
-                    if content:
-                        chunks.append(content)
-                        response_box.markdown("".join(chunks) + "▌")
-                elif event_type == "thinking":
-                    thought = payload.get("thinking", "")
-                    if thought:
-                        status.write(f"💭 {thought}")
-                elif event_type == "tool_call":
-                    status.write(f"🔧 استخدام أداة: `{payload.get('name', '')}`")
-                elif event_type == "progress":
-                    if payload.get("content"):
-                        status.write(f"⏳ {payload['content']}")
-                elif event_type == "error":
-                    failure = payload.get("content") or payload.get("message") or str(payload)
+            msg_type, data = event_queue.get()
+            if msg_type == "session_id":
+                st.session_state.session_id = data
+            elif msg_type == "db_assistant_message":
+                if not full_response and data:
+                    full_response.append(data)
+            elif msg_type == "event":
+                e_type = data.get("type")
+                if e_type == "content":
+                    chunk = data.get("content", "")
+                    if chunk:
+                        full_response.append(chunk)
+                        response_placeholder.markdown("".join(full_response) + "▌")
+                elif e_type == "result":
+                    meta = data.get("metadata", {})
+                    resp_val = meta.get("response") or meta.get("answer") or data.get("content", "")
+                    if resp_val and not full_response:
+                        full_response.append(resp_val)
+                elif e_type == "thinking":
+                    thinking_text = data.get("thinking", "")
+                    if thinking_text:
+                        status_box.write(f"💭 **تفكير المحرك:** {thinking_text}")
+                elif e_type == "tool_call":
+                    tool_name = data.get("name", "")
+                    status_box.write(f"🔧 **استخدام أداة:** `{tool_name}`")
+                elif e_type == "progress":
+                    prog_content = data.get("content", "")
+                    if prog_content:
+                        status_box.write(f"⏳ **المرحلة:** {prog_content}")
+                elif e_type == "error":
+                    err_msg = data.get("content") or data.get("message") or str(data)
+                    error_occurred = err_msg
                     break
-                elif event_type == "result" and not chunks:
-                    metadata = payload.get("metadata", {})
-                    result = metadata.get("response") or metadata.get("answer") or payload.get("content", "")
-                    if result:
-                        chunks.append(result)
-            elif kind == "error":
-                failure = payload
+            elif msg_type == "error":
+                error_occurred = data
                 break
-            elif kind == "done":
+            elif msg_type == "done":
                 break
 
-        if failure:
-            status.update(label="❌ حدث خطأ أثناء المعالجة", state="error")
-            st.error(f"خطأ أثناء تشغيل محرك DeepTutor: {failure}")
-        elif chunks:
-            answer = "".join(chunks).strip()
-            response_box.markdown(answer)
-            status.update(label="✅ اكتملت الإجابة", state="complete", expanded=False)
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+        if error_occurred:
+            status_box.update(label="❌ حدث خطأ أثناء المعالجة", state="error", expanded=True)
+            st.error(f"خطأ أثناء تشغيل محرك DeepTutor: {error_occurred}")
+        elif not full_response:
+            status_box.update(label="⚠️ لم يتم استلام نص للإجابة", state="error", expanded=True)
+            st.warning("انتهت المعالجة دون إرجاع نص، يُرجى المحاولة مرة أخرى.")
         else:
-            status.update(label="⚠️ لم تصل إجابة", state="error")
-            st.warning("انتهت المعالجة دون نص. راجع سجل تشغيل DeepTutor.")
+            status_box.update(label="✅ تم اكتمال الإجابة بنجاح!", state="complete", expanded=False)
+            final_text = "".join(full_response).strip()
+            response_placeholder.markdown(final_text)
+            st.session_state.messages.append({"role": "assistant", "content": final_text})
