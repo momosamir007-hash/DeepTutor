@@ -1,13 +1,20 @@
-streamlit
--r requirements/core.txt
--r requirements/modules/parsing.txt
--r requirements/modules/research.txt
--r requirements/modules/questions.txt
--r requirements/modules/server.txt
--r requirements/modules/knowledge.txt
--r requirements/modules/memory.txt
--r requirements/modules/books.txt
--r requirements/modules/reading.txt
--r requirements/modules/visualize.txt
--r requirements/modules/audio-overview.txt
--r requirements/modules/providers.txt
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+openai>=1.30.0
+httpx>=0.27.0
+aiohttp>=3.9.4
+requests>=2.32.2
+aiosqlite>=0.19.0
+PyYAML>=6.0
+typer>=0.9.0
+rich>=13.0.0
+loguru>=0.7.3
+json-repair>=0.57.0
+tiktoken>=0.5.0
+PyMuPDF>=1.24.0
+python-docx>=1.1.0
+openpyxl>=3.1.0
+pypdf>=4.0.0
+python-multipart>=0.0.6
+fastapi>=0.100.0
+uvicorn>=0.24.0
