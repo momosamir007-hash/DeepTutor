@@ -15,14 +15,28 @@ from deeptutor.core.turn_request import TurnRequest, OutgoingAttachment
 st.set_page_config(page_title="DeepTutor - المدرس الذكي", page_icon="🎓", layout="wide")
 
 st.title("🎓 DeepTutor - محرك التدريس الذكي")
-st.caption("يعمل بمحرك DeepTutor الأصلي والقدرات المتعددة (Multi-Stage Agentic Capabilities)")
+st.caption("يعمل بمحرك DeepTutor الأصلي والقدرات التوليدية المتعددة (Multi-Stage Agentic Capabilities)")
 
 # 1. إنشاء حلقة أحداث مستمرة (Persistent Event Loop) لتفادي خطأ Event Loop
 @st.cache_resource
 def get_background_engine():
     """حلقة أحداث مخصصة تعمل في خلفية التطبيق لمنع تعارض الأقفال (Asyncio Locks)"""
+    # تنظيف أي أقفال أو حاويات قديمة من جلسات سابقة لمنع أخطاء الأقفال
+    try:
+        import deeptutor.app.container as app_container
+        import deeptutor.services.session.sqlite_store as sqlite_store
+        app_container._default_container = None
+        sqlite_store._instances.clear()
+    except Exception:
+        pass
+
     loop = asyncio.new_event_loop()
-    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    
+    def _run_worker(l):
+        asyncio.set_event_loop(l)
+        l.run_forever()
+
+    thread = threading.Thread(target=_run_worker, args=(loop,), daemon=True)
     thread.start()
 
     async def _init():
@@ -66,6 +80,13 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📚 المرفقات والكتب")
     uploaded_file = st.file_uploader("ارفع كتاباً أو ملفاً (PDF/TXT):", type=["pdf", "txt", "md"])
+
+    st.markdown("---")
+    if st.button("🔄 إعادة ضبط الجلسة والمحرك"):
+        st.cache_resource.clear()
+        st.session_state.session_id = None
+        st.session_state.messages = []
+        st.rerun()
 
 # 3. إدارة الجلسة في Streamlit
 if "session_id" not in st.session_state:
@@ -119,7 +140,14 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
 
         async def _run_turn_coro(req, q):
             try:
-                session, turn = await app.start_turn(req)
+                try:
+                    session, turn = await app.start_turn(req)
+                except Exception as ex:
+                    if "not found in this workspace" in str(ex):
+                        req.session_id = None
+                        session, turn = await app.start_turn(req)
+                    else:
+                        raise ex
                 q.put(("session_id", session["id"]))
                 async for event in app.stream_turn(turn["id"]):
                     q.put(("event", event))
