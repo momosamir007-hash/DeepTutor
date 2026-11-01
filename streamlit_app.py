@@ -151,6 +151,18 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
                 q.put(("session_id", session["id"]))
                 async for event in app.stream_turn(turn["id"]):
                     q.put(("event", event))
+                
+                # جلب أي رد تم تخزينه في الجلسة للتأكد بنسبة 100% من عدم فقدان الإجابة
+                try:
+                    store = app.turns.store_provider.get()
+                    db_msgs = await store.get_messages(session["id"])
+                    for m in reversed(db_msgs):
+                        if m.get("role") == "assistant" and m.get("content"):
+                            q.put(("db_assistant_message", m["content"]))
+                            break
+                except Exception:
+                    pass
+
             except Exception as e:
                 q.put(("error", str(e)))
             finally:
@@ -166,6 +178,9 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
             msg_type, data = event_queue.get()
             if msg_type == "session_id":
                 st.session_state.session_id = data
+            elif msg_type == "db_assistant_message":
+                if not full_response and data:
+                    full_response.append(data)
             elif msg_type == "event":
                 e_type = data.get("type")
                 if e_type == "content":
@@ -202,14 +217,14 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
         if error_occurred:
             status_box.update(label="❌ حدث خطأ أثناء المعالجة", state="error", expanded=True)
             if "503" in str(error_occurred):
-                st.error("⚠️ خوادم النموذج تواجه ضغطاً مؤقتاً (503 High Demand). يرجى إرسال الرسالة مرة أخرى.")
+                st.error("⚠️ خوادم النموذج تواجه ضغطاً مؤقتاً (503 High Demand). يرجى إرسال الرسالة مرة أخرى الآن.")
             elif "429" in str(error_occurred):
-                st.error("⚠️ تم تجاوز الحصة اللحظية لمفتاح API (Rate Limit 429). انتظر بضع ثوانٍ وأعد المحاولة.")
+                st.error("⚠️ تم استهلاك حصة الـ API مؤقتاً (429 Rate Limit). يرجى الانتظار دقيقة وإعادة الإرسال.")
             else:
                 st.error(f"خطأ أثناء تشغيل محرك DeepTutor: {error_occurred}")
         elif not full_response:
             status_box.update(label="⚠️ لم يتم استلام نص للإجابة", state="error", expanded=True)
-            st.warning("انتهت المعالجة لكن لم يُرجع النموذج أي نص. يُرجى إعادة إرسال السؤال.")
+            st.warning("انتهت المعالجة لكن لم يُرجع النموذج أي نص. يُرجى إعادة إرسال السؤال مرة أخرى.")
         else:
             status_box.update(label="✅ تم اكتمال الإجابة بنجاح!", state="complete", expanded=False)
             final_text = "".join(full_response).strip()
