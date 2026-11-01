@@ -137,12 +137,6 @@ def get_background_engine(api_key: str):
     thread.start()
 
     async def _init():
-        # Parsing is an optional DeepTutor module. In a source checkout it is
-        # already present in the repository; it only needs to be enabled in
-        # the official module-selection state before the engine is created.
-        from deeptutor.modules.lifecycle import change as change_module
-        change_module("enable", "parsing")
-
         # Configure the official model catalog before DeepTutorApp creates
         # services that resolve the active LLM.
         _configure_gemini_catalog(api_key)
@@ -161,7 +155,7 @@ if not gemini_key_input:
 try:
     loop, app = get_background_engine(gemini_key_input)
 except Exception as init_error:
-    st.error(f"تعذر تهيئة DeepTutor مع Gemini أو تفعيل وحدة parsing: {init_error}")
+    st.error(f"تعذر تهيئة DeepTutor مع Gemini: {init_error}")
     st.stop()
 
 # 3. القائمة الجانبية (Sidebar)
