@@ -1,26 +1,29 @@
-import streamlit as st
-import asyncio
-import threading
-import base64
 import os
 import sys
+import base64
+import asyncio
+import threading
 from queue import Queue
+import streamlit as st
 
-# التأكد من مسار المشروع
-sys.path.insert(0, os.path.abspath("."))
+# إجبار نظام بايثون على قراءة مجلدات المشروع وحل مشكلة ModuleNotFoundError
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
 from deeptutor.app import DeepTutorApp
 from deeptutor.core.turn_request import TurnRequest, OutgoingAttachment
 
+# إعدادات واجهة الصفحة
 st.set_page_config(page_title="DeepTutor - المدرس الذكي", page_icon="🎓", layout="wide")
 
 st.title("🎓 DeepTutor - محرك التدريس الذكي")
-st.caption("يعمل بمحرك DeepTutor الأصلي والقدرات التوليدية المتعددة (Multi-Stage Agentic Capabilities)")
+st.caption("يعمل بمحرك DeepTutor الأصلي مع القدرات التوليدية المتعددة (Agentic Multi-Capabilities)")
 
-# 1. إنشاء حلقة أحداث مستمرة + تهيئة النموذج النشط
+# 1. تهيئة حلقة الأحداث (Async Loop) وضبط النموذج الافتراضي في الخلفية
 @st.cache_resource
 def get_background_engine():
-    """حلقة أحداث مخصصة تعمل في خلفية التطبيق وتضبط النموذج الافتراضي"""
+    """تنشيط حلقة أحداث خلفية مستمرة وتكوين إعدادات الموديل الافتراضي"""
     try:
         import deeptutor.app.container as app_container
         import deeptutor.services.session.sqlite_store as sqlite_store
@@ -40,18 +43,25 @@ def get_background_engine():
 
     async def _init():
         app = DeepTutorApp()
-        # تهيئة نموذج اللغة ومفتاح الـ API داخل محرك DeepTutor
+        
+        # تهيئة نموذج اللغة ومفتاح الـ API داخل محرك DeepTutor لتفادي خطأ No active LLM
         try:
             settings_service = app.container.settings()
+            
             # جلب المفتاح من بيئة النظام أو من Streamlit Secrets
             api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
+            openai_key = os.environ.get("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY", "")
             
+            provider = "gemini" if api_key else "openai"
+            model_name = "gemini-1.5-flash" if api_key else "gpt-4o-mini"
+            active_key = api_key if api_key else openai_key
+
             await settings_service.update_settings({
-                "active_model": "gemini-1.5-flash",
-                "active_provider": "gemini",
+                "active_model": model_name,
+                "active_provider": provider,
                 "providers": {
-                    "gemini": {
-                        "api_key": api_key,
+                    provider: {
+                        "api_key": active_key,
                         "enabled": True
                     }
                 }
@@ -65,12 +75,12 @@ def get_background_engine():
     app = future.result()
     return loop, app
 
-# جلب الحلقة والمحرك
+# تشغيل المحرك
 loop, app = get_background_engine()
 
 # 2. القائمة الجانبية (Sidebar)
 with st.sidebar:
-    st.header("⚙️ قدرات DeepTutor الأصلية")
+    st.header("⚙️ إعدادات DeepTutor")
     
     capability_options = {
         "chat": "💬 محادثة وتدريس تفاعلي (Chat)",
@@ -98,7 +108,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("📚 المرفقات والكتب")
-    uploaded_file = st.file_uploader("ارفع كتاباً أو ملفاً (PDF/TXT):", type=["pdf", "txt", "md"])
+    uploaded_file = st.file_uploader("ارفع كتاباً أو ملفاً (PDF/TXT/MD):", type=["pdf", "txt", "md"])
 
     st.markdown("---")
     if st.button("🔄 إعادة ضبط الجلسة والمحرك"):
@@ -107,25 +117,25 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# 3. إدارة الجلسة في Streamlit
+# 3. إدارة حالة الجلسة (Session State)
 if "session_id" not in st.session_state:
     st.session_state.session_id = None
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# عرض سجل الرسائل السابقة
+# عرض سجل المحادثات السابقة
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 4. معالجة رسالة الطالب
-if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هنا..."):
+# 4. استقبال معالجة رسائل المستخدم
+if prompt := st.chat_input("اكتب سؤالك أو الدرس الذي تريد شرحه..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # تجهيز المرفقات عبر نظام OutgoingAttachment الأصلي في DeepTutor
+    # تجهيز الملفات المرفقة عبر كلاس OutgoingAttachment الخاص بالمحرك
     attachments = []
     if uploaded_file is not None:
         file_bytes = uploaded_file.getvalue()
@@ -140,7 +150,7 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
             )
         )
 
-    # بناء طلب الجلسة الأصلي TurnRequest
+    # إنشاء طلب TurnRequest المعتمد في DeepTutor
     turn_req = TurnRequest(
         content=prompt,
         capability=selected_cap,
@@ -154,7 +164,7 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
         response_placeholder = st.empty()
         status_box = st.status("🧠 جاري تشغيل قدرات DeepTutor...", expanded=True)
         
-        # طابور آمن لتبادل الأحداث بين ثريد البايثون وثريد Streamlit
+        # طابور آمن لاستقبال الأحداث من Thread المحرك
         event_queue = Queue()
 
         async def _run_turn_coro(req, q):
@@ -171,7 +181,7 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
                 async for event in app.stream_turn(turn["id"]):
                     q.put(("event", event))
                 
-                # جلب أي رد تم تخزينه في الجلسة
+                # جلب أي رد مخزن في قاعدة البيانات لضمان عدم فقدان النص
                 try:
                     store = app.turns.store_provider.get()
                     db_msgs = await store.get_messages(session["id"])
@@ -187,7 +197,7 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
             finally:
                 q.put(("done", None))
 
-        # إرسال الكوروتين إلى الحلقة المستمرة بأمان
+        # إرسال المهمة للحلقة المستمرة
         asyncio.run_coroutine_threadsafe(_run_turn_coro(turn_req, event_queue), loop)
 
         full_response = []
@@ -215,7 +225,7 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
                 elif e_type == "thinking":
                     thinking_text = data.get("thinking", "")
                     if thinking_text:
-                        status_box.write(f"💭 **تفكير:** {thinking_text}")
+                        status_box.write(f"💭 **تفكير المحرك:** {thinking_text}")
                 elif e_type == "tool_call":
                     tool_name = data.get("name", "")
                     status_box.write(f"🔧 **استخدام أداة:** `{tool_name}`")
@@ -238,7 +248,7 @@ if prompt := st.chat_input("اكتب سؤالك أو موضوع الدرس هن�
             st.error(f"خطأ أثناء تشغيل محرك DeepTutor: {error_occurred}")
         elif not full_response:
             status_box.update(label="⚠️ لم يتم استلام نص للإجابة", state="error", expanded=True)
-            st.warning("انتهت المعالجة لكن لم يُرجع النموذج أي نص. يُرجى إعادة إرسال السؤال مرة أخرى.")
+            st.warning("انتهت المعالجة دون إرجاع نص، يُرجى المحاولة مرة أخرى.")
         else:
             status_box.update(label="✅ تم اكتمال الإجابة بنجاح!", state="complete", expanded=False)
             final_text = "".join(full_response).strip()
