@@ -1,4 +1,11 @@
-pydantic>=2.0.0
+# تثبيت حزمة DeepTutor محلياً داخل بيئة التطبيق (يحل خطأ ModuleNotFoundError)
+-e .
+
+# مكتبة واجهة Streamlit
+streamlit>=1.30.0
+
+# الاعتماديات الأساسية لمحرك DeepTutor
+Pydantic>=2.0.0
 pydantic-settings>=2.0.0
 openai>=1.30.0
 httpx>=0.27.0
