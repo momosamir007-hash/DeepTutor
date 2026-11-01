@@ -1,16 +1,23 @@
 import os
 import sys
-import base64
+
+# 1. إجبار نظام بايثون على قراءة المجلد الحالي والمجلد الأب لحل مشكلة ModuleNotFoundError
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
+PARENT_DIR = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+
+# 2. استيراد المكتبات الأساسية
+import streamlit as st
 import asyncio
 import threading
+import base64
 from queue import Queue
-import streamlit as st
 
-# إجبار نظام بايثون على قراءة مجلدات المشروع وحل مشكلة ModuleNotFoundError
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
-
+# 3. استيراد محرك DeepTutor
 from deeptutor.app import DeepTutorApp
 from deeptutor.core.turn_request import TurnRequest, OutgoingAttachment
 
@@ -20,7 +27,7 @@ st.set_page_config(page_title="DeepTutor - المدرس الذكي", page_icon="
 st.title("🎓 DeepTutor - محرك التدريس الذكي")
 st.caption("يعمل بمحرك DeepTutor الأصلي مع القدرات التوليدية المتعددة (Agentic Multi-Capabilities)")
 
-# 1. تهيئة حلقة الأحداث (Async Loop) وضبط النموذج الافتراضي في الخلفية
+# 4. تهيئة حلقة الأحداث (Async Loop) وتكوين النموذج الافتراضي
 @st.cache_resource
 def get_background_engine():
     """تنشيط حلقة أحداث خلفية مستمرة وتكوين إعدادات الموديل الافتراضي"""
@@ -44,11 +51,10 @@ def get_background_engine():
     async def _init():
         app = DeepTutorApp()
         
-        # تهيئة نموذج اللغة ومفتاح الـ API داخل محرك DeepTutor لتفادي خطأ No active LLM
+        # تهيئة نموذج اللغة ومفتاح الـ API لتفادي خطأ No active LLM
         try:
             settings_service = app.container.settings()
             
-            # جلب المفتاح من بيئة النظام أو من Streamlit Secrets
             api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
             openai_key = os.environ.get("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY", "")
             
@@ -78,7 +84,7 @@ def get_background_engine():
 # تشغيل المحرك
 loop, app = get_background_engine()
 
-# 2. القائمة الجانبية (Sidebar)
+# 5. القائمة الجانبية (Sidebar)
 with st.sidebar:
     st.header("⚙️ إعدادات DeepTutor")
     
@@ -117,7 +123,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# 3. إدارة حالة الجلسة (Session State)
+# 6. إدارة حالة الجلسة (Session State)
 if "session_id" not in st.session_state:
     st.session_state.session_id = None
 
@@ -129,13 +135,13 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 4. استقبال معالجة رسائل المستخدم
+# 7. معالجة رسائل المستخدم
 if prompt := st.chat_input("اكتب سؤالك أو الدرس الذي تريد شرحه..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # تجهيز الملفات المرفقة عبر كلاس OutgoingAttachment الخاص بالمحرك
+    # تجهيز الملفات المرفقة
     attachments = []
     if uploaded_file is not None:
         file_bytes = uploaded_file.getvalue()
@@ -164,7 +170,6 @@ if prompt := st.chat_input("اكتب سؤالك أو الدرس الذي تري�
         response_placeholder = st.empty()
         status_box = st.status("🧠 جاري تشغيل قدرات DeepTutor...", expanded=True)
         
-        # طابور آمن لاستقبال الأحداث من Thread المحرك
         event_queue = Queue()
 
         async def _run_turn_coro(req, q):
@@ -181,7 +186,6 @@ if prompt := st.chat_input("اكتب سؤالك أو الدرس الذي تري�
                 async for event in app.stream_turn(turn["id"]):
                     q.put(("event", event))
                 
-                # جلب أي رد مخزن في قاعدة البيانات لضمان عدم فقدان النص
                 try:
                     store = app.turns.store_provider.get()
                     db_msgs = await store.get_messages(session["id"])
