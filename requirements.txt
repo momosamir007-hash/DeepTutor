@@ -1,6 +1,6 @@
 # DeepTutor on Streamlit Community Cloud
 streamlit>=1.38.0,<2.0.0
--e .
+
 
 # Document parsing module (PDF, Office files and images)
 PyMuPDF>=1.26.0
