@@ -1,4 +1,14 @@
-# Source/Docker full profile. Generated module groups own dependency versions.
--r requirements/full.txt
 streamlit
+-r requirements/core.txt
+-r requirements/modules/parsing.txt
+-r requirements/modules/research.txt
+-r requirements/modules/questions.txt
+-r requirements/modules/server.txt
+-r requirements/modules/knowledge.txt
+-r requirements/modules/memory.txt
+-r requirements/modules/books.txt
+-r requirements/modules/reading.txt
+-r requirements/modules/visualize.txt
+-r requirements/modules/audio-overview.txt
+-r requirements/modules/providers.txt
 
