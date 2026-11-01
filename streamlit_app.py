@@ -1,7 +1,7 @@
 import os
 import sys
 
-# 1. إجبار نظام بايثون على قراءة المجلد الحالي والمجلد الأب لحل مشكلة ModuleNotFoundError
+# 1. إجبار نظام بايثون على قراءة المجلد الحالي والمجلد الأب لحل مسارات الاستيراد
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
@@ -10,27 +10,24 @@ PARENT_DIR = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
-# 2. استيراد المكتبات الأساسية
 import streamlit as st
 import asyncio
 import threading
 import base64
 from queue import Queue
 
-# 3. استيراد محرك DeepTutor
 from deeptutor.app import DeepTutorApp
 from deeptutor.core.turn_request import TurnRequest, OutgoingAttachment
 
-# إعدادات واجهة الصفحة
 st.set_page_config(page_title="DeepTutor - المدرس الذكي", page_icon="🎓", layout="wide")
 
 st.title("🎓 DeepTutor - محرك التدريس الذكي")
 st.caption("يعمل بمحرك DeepTutor الأصلي مع القدرات التوليدية المتعددة (Agentic Multi-Capabilities)")
 
-# 4. تهيئة حلقة الأحداث (Async Loop) وتكوين النموذج الافتراضي
+# 2. حلقة أحداث خلفية وتهيئة صريحة لإعدادات النموذج في DeepTutor
 @st.cache_resource
 def get_background_engine():
-    """تنشيط حلقة أحداث خلفية مستمرة وتكوين إعدادات الموديل الافتراضي"""
+    """تنشيط حلقة أحداث خلفية وتكوين النموذج والنموذج الفعال برمجياً"""
     try:
         import deeptutor.app.container as app_container
         import deeptutor.services.session.sqlite_store as sqlite_store
@@ -51,30 +48,59 @@ def get_background_engine():
     async def _init():
         app = DeepTutorApp()
         
-        # تهيئة نموذج اللغة ومفتاح الـ API لتفادي خطأ No active LLM
+        # جلب المفاتيح من Streamlit Secrets أو بيئة النظام
+        gemini_key = ""
+        openai_key = ""
         try:
-            settings_service = app.container.settings()
-            
-            api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
-            openai_key = os.environ.get("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY", "")
-            
-            provider = "gemini" if api_key else "openai"
-            model_name = "gemini-1.5-flash" if api_key else "gpt-4o-mini"
-            active_key = api_key if api_key else openai_key
+            gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+        except Exception:
+            pass
+        gemini_key = gemini_key or os.environ.get("GEMINI_API_KEY", "")
 
-            await settings_service.update_settings({
+        try:
+            openai_key = st.secrets.get("OPENAI_API_KEY", "")
+        except Exception:
+            pass
+        openai_key = openai_key or os.environ.get("OPENAI_API_KEY", "")
+
+        # اختيار المزود والنموذج الافتراضي
+        if gemini_key:
+            provider = "gemini"
+            model_name = "gemini-1.5-flash"
+            active_key = gemini_key
+            os.environ["GEMINI_API_KEY"] = gemini_key
+        elif openai_key:
+            provider = "openai"
+            model_name = "gpt-4o-mini"
+            active_key = openai_key
+            os.environ["OPENAI_API_KEY"] = openai_key
+        else:
+            provider = "gemini"
+            model_name = "gemini-1.5-flash"
+            active_key = "DEMO_KEY"
+
+        # تسجيل النموذج والمزود صراحة في خدمة إعدادات DeepTutor
+        try:
+            settings_svc = app.container.settings()
+            
+            # بناء هيكل الإعدادات المطلوبة
+            config_data = {
                 "active_model": model_name,
                 "active_provider": provider,
                 "providers": {
                     provider: {
                         "api_key": active_key,
-                        "enabled": True
+                        "enabled": True,
+                        "default_model": model_name
                     }
                 }
-            })
-        except Exception:
-            pass
+            }
             
+            if hasattr(settings_svc, "update_settings"):
+                await settings_svc.update_settings(config_data)
+        except Exception as err:
+            print(f"[DeepTutor Settings Init Error]: {err}")
+
         return app
 
     future = asyncio.run_coroutine_threadsafe(_init(), loop)
@@ -84,9 +110,15 @@ def get_background_engine():
 # تشغيل المحرك
 loop, app = get_background_engine()
 
-# 5. القائمة الجانبية (Sidebar)
+# 3. القائمة الجانبية (Sidebar)
 with st.sidebar:
     st.header("⚙️ إعدادات DeepTutor")
+    
+    # إمكانية إدخال المفتاح يدويًا إذا لم يكن مضبوطاً في Secrets
+    user_key = st.text_input("مفتاح API (Gemini / OpenAI):", type="password")
+    if user_key:
+        os.environ["GEMINI_API_KEY"] = user_key
+        os.environ["OPENAI_API_KEY"] = user_key
     
     capability_options = {
         "chat": "💬 محادثة وتدريس تفاعلي (Chat)",
@@ -123,25 +155,23 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# 6. إدارة حالة الجلسة (Session State)
+# 4. إدارة حالة الجلسة
 if "session_id" not in st.session_state:
     st.session_state.session_id = None
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# عرض سجل المحادثات السابقة
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 7. معالجة رسائل المستخدم
+# 5. معالجة الرسائل
 if prompt := st.chat_input("اكتب سؤالك أو الدرس الذي تريد شرحه..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # تجهيز الملفات المرفقة
     attachments = []
     if uploaded_file is not None:
         file_bytes = uploaded_file.getvalue()
@@ -156,7 +186,6 @@ if prompt := st.chat_input("اكتب سؤالك أو الدرس الذي تري�
             )
         )
 
-    # إنشاء طلب TurnRequest المعتمد في DeepTutor
     turn_req = TurnRequest(
         content=prompt,
         capability=selected_cap,
@@ -201,7 +230,6 @@ if prompt := st.chat_input("اكتب سؤالك أو الدرس الذي تري�
             finally:
                 q.put(("done", None))
 
-        # إرسال المهمة للحلقة المستمرة
         asyncio.run_coroutine_threadsafe(_run_turn_coro(turn_req, event_queue), loop)
 
         full_response = []
